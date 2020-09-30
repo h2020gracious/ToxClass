@@ -1,0 +1,441 @@
+---
+title: "Jackson and coworkers data"
+output: html_notebook
+---
+
+ # A comprehensive Machine Learning Workflow with multiple modelling using R's caretEnsemble
+  
+  ### Introduction
+This workflow summarizes all preprocessing and data analysis tasks for read-across and classification processes. It has been utilized with nano carbon-tubes data from Jackson et al. (2015) work, however can be easily adopted for the GRACIOUS physicochemical descriptors data.
+
+https://onlinelibrary.wiley.com/doi/abs/10.1002/em.21922
+
+Data consists of 19 different NFs and 49 descriptors. 
+
+### Modeling toxicity 
+
+The result, is a model that could reliably predict NFs toxicity given 
+
+### A machine learning workflow
+
+The workflow is split in 6 parts as follows:  
+1) Data upload  
+2) Exploratory data analysis  
+3) Feature selection  
+4) Data preparation  
+5) Modelling  
+6) Conclusion  
+
+In practice, some of the steps could well be eliminated depending on how noisy the data is.
+
+
+The workflow covers practically everything that you would follow in supervised learning, for both classification and regression problems. However, here dual or solely classification models are presented.
+
+
+
+  
+  ### 1) Data upload
+  
+
+
+##### 1.4) Import the dataset
+
+We can simply load it with this code:
+
+```{r}
+concrete <- read.csv("jackson2014FixYou.csv",sep=',')
+```
+
+This is the size of our dataset:
+  
+```{r}
+dim(concrete)
+```
+
+19 NFs and 49 variables, some of which could serve as a response/target variable.  
+* 1st column is a categorical variable distinguishing groups (0,1,2,3) and Reference material 4. 
+* Mean particle size (Zave, nm), polidispersity index (PDi)
+* Endotoxin, the two columns should be the same (log2(1.35=~0.42))
+
+Data are imported as a data frame:
+  
+```{r}
+class(concrete)
+```
+
+Check column names to see if they are correctly imported:
+
+```{r}
+names(concrete)
+```
+
+From that list, "MWCNT_group" is a response/target variable (classification) & Endotoxin.
+
+We can conclude that our data was correctly imported and thus end our "Setting" phase. 
+
+Upload library packages:
+  
+```{r message=FALSE, warning=FALSE}
+library(dplyr)
+library(PerformanceAnalytics)
+library(ggplot2)
+library(ggthemes)
+library(corrplot)
+library(car)
+library(psych)
+library(caret)
+library(caretEnsemble)
+library(doParallel)
+```
+
+Exploratory data analysis:
+
+### 2) Exploratory Data Analysis (EDA)
+
+##### 2.1) View Data (str or dplyr's glimpse). 
+  
+Double check what we did in the "Setting" phase by quickly viewing the full dataset. Not suitable for large data sets.
+  
+```{r}
+View(concrete)
+```
+
+
+
+Next, take a glimpse of the data and observe just the first few rows of the data frame:
+  
+```{r}
+glimpse(concrete)
+rownames(concrete)<- concrete[,2]
+concrete<- concrete[,-c(2,3,4,5,32,45:49)]
+```
+
+Useful statistics:
+
+```{r}
+summary(concrete)
+```
+
+Same descriptive statistics can be observed with a plot using ggplot2:
+
+```{r}
+getmode <- function(v) {
+   uniqv <- unique(v[which( !is.na(v) )])
+   uniqv[which.max(tabulate(match(v, uniqv)))]}
+ggplot(data = concrete) +
+  geom_histogram(mapping = aes(x = Endotoxin_ml), bins = 15, boundary = 0, fill = "gray", col = "black") +
+  geom_vline(xintercept = mean(concrete$Endotoxin_ml,na.rm=T), col = "blue", size = 1) +
+  geom_vline(xintercept = median(concrete$Endotoxin_ml,na.rm=T), col = "red", size = 1) +
+  geom_vline(xintercept = getmode(concrete$Endotoxin_ml), col = "green", size = 1) +
+  annotate("text", label = "Median = 0.49", x = 0.5, y = 3.5, col = "red", size = 5) +
+  annotate("text", label = "Mode = 0.03", x = 0.1, y = 3.5, col = "black", size = 5) +
+  annotate("text", label = "Mean = 0.553", x = 0.55, y = 4, col = "blue", size = 5) +
+  ggtitle("Histogram of Endotoxin_ml") +
+  theme_bw()
+```
+
+Remove columns with more than 60% NA values:
+```{r}
+thres1<- round(nrow(concrete)*.6)
+concrete1<- concrete[,which(colSums(!is.na(concrete))>=thres1)]
+
+thres2<- which(apply(concrete1,2,function(x){var(x,na.rm=T)})<=0.000001)
+concrete2<- concrete1[,-thres2] #ZnO out because invariant
+```
+
+Correlation plot - this will produce a chart showing the correlation between all variables. Based on results, some of the variables can be omitted to avoid feature variables to present a high correlation between them. 
+
+```{r}
+corrplot(cor(concrete2,use='pairwise.complete.obs'), method = "square",type='upper')
+```
+
+```{r}
+chart.Correlation(concrete2)
+```
+
+```{r}
+concrete2.f<- concrete2[,c(2,3,4,7,9,12,14)]#c(7,12,3,2,4,9,14)
+corrplot(cor(t(concrete2.f),use='pairwise.complete.obs'), method = "square",type='upper')
+
+library(dendextend)
+concrete2 %>% 
+  select(Fe2O3, Length_A, Purity, Diameter_A) %>% 
+  dist() %>% 
+  hclust() %>% 
+  as.dendrogram() -> dend
+# Plot
+par(mar=c(7,3,1,1))  # Increase bottom margin to have the complete label
+plot(dend)
+
+par(mar=c(1,1,1,7))
+dend %>%
+  set("labels_col", value = c("skyblue", "orange", "grey"), k=3) %>%
+  set("branches_k_color", value = c("skyblue", "orange", "grey"), k = 3) %>%
+  plot(horiz=TRUE, axes=FALSE)
+abline(v = 350, lty = 2)
+# Highlight a cluster with rectangle
+par(mar=c(9,1,1,1))
+dend %>%
+  set("labels_col", value = c("skyblue", "orange", "grey"), k=3) %>%
+  set("branches_k_color", value = c("skyblue", "orange", "grey"), k = 3) %>%
+  plot(axes=FALSE)
+rect.dendrogram( dend, k=3, lty = 5, lwd = 0, x=1, col=rgb(0.1, 0.2, 0.4, 0.1) ) 
+
+d <- dist(as.matrix(concrete2))   # find distance matrix 
+hc <- hclust(d)                # apply hirarchical clustering 
+plot(hc)
+```
+
+
+At this point my first conclusion is that the variable "ash" has low correlation with our response variable "strentgh" and a high correlation with most of the other features. It is thus a strong candidate to be removed.
+
+```{r}
+knnOutput <- function(x){
+  l1<- sum(is.na(x))
+  w1<- which(is.na(x))
+  if(l1>=1){x[w1]<- mean(x,na.rm=T)}
+  return(x)
+}
+concrete3<- apply(concrete2,2,knnOutput)
+
+simple_lm <- glm(concrete2$MWCNT_group ~ ., data = concrete2, family='poisson')
+vif(simple_lm)
+```
+##### 4.4) Is our dataset randomized?
+
+Most probably data are not randomized, so shuffle just in case:
+
+```{r}
+set.seed(123)
+concrete_rand <- concrete3[sample(1:nrow(concrete3)), ]
+dim(concrete_rand)
+```
+
+##### 4.6) Split dataset into train & test sets (set seed for replicability)
+
+First create a set of predictors and a set of the target variable
+
+```{r}
+X = concrete_rand[, -1]
+y = concrete_rand[, 1]
+```
+
+Check everything is ok:
+
+```{r}
+str(X)
+str(y)
+```
+
+Proceed to split new "X" (predictors) and "y" (target) sets into training and test sets.
+
+Use caret's createDataPartition() function, which generates the partition indexes, and use them to perform the splits:
+
+```{r}
+set.seed(123)
+part.index <- createDataPartition(concrete_rand[,1], p = 0.75, list = FALSE)
+X_train <- X[part.index, ]
+X_test <- X[-part.index, ]
+y_train <- y[part.index]
+y_test <- y[-part.index]
+```
+
+4 sets overall: Two predictors sets splitted into train and test, and two target sets splitted into train and test. All of them using the same index for partitioning.
+
+
+```{r}
+str(X_train)
+str(X_test)
+str(y_train)
+str(y_test)
+```
+
+### 5) MODELING
+
+
+* caretEnsemble package is used in order to train a list of models all at the same time.  
+
+* This will allow us to use the same 5 fold cross validation for each model, thanks to caret's functionallity.
+
+* Parallel processing is allowed to boost speed 
+
+* Default models used: a generalized linear model with embedded stepwise selection AIC procedure, a support vector machines with radial kernel, a random forest, a gradient boosting tree and a gradient boosting linear model, a bayesian classifier and a recursive partitioning tree model.
+
+* Manual hyperparameter tuning i snot included at the moment- allow for caret default tuning in each model.
+
+* We will compare performance over training and test sets, focusing on RMSE as our metric (root mean squared error).
+
+* Finally, we employ a caretEnsemble package functionality to ensemble the model list and produce an ultimate combination of models to hopefully improve perfomance even more.
+
+
+
+Set up parallel processing and cross validation in trainControl()
+
+```{r}
+registerDoParallel(4) # set 4 cores by default
+getDoParWorkers()
+set.seed(123) # for replicability
+my_control <- trainControl(method = "cv", # for "cross-validation"
+                           number = 5, # number of k-folds
+                           savePredictions = "final",
+                           allowParallel = TRUE)
+```
+
+Train the list of models using the caretList() function by calling X_train and y_train sets. 
+
+Specify trControl using the trainControl object created above, and set methodList to a list of algorithms (default models).
+
+```{r message=FALSE, warning=FALSE}
+set.seed(222)
+model_list <- caretList(X_train, # can perfectly use y ~ x1 + x2 + ... + xn formula instead
+                        y_train,
+                        trControl = my_control, # remember, 5 fold cross validation + allowparallel
+                        methodList = c("glmStepAIC", "svmRadial", "rf", "xgbTree", "xgbLinear","bayesglm","rpart1SE"), # 7 models
+                        tuneList = NULL, # no manual hyperparameter tuning
+                        continue_on_fail = FALSE, # stops if something fails
+                        preProcess  = c("center","scale")) # scale the dataset
+```
+
+Results for each separate model can be accessed. Here's the SVM result:
+
+```{r}
+model_list$svmRadial
+```
+
+
+Objective: finding the model that has the lowest root mean squared error. 
+First asses this for the training data.
+
+```{r}
+options(digits = 3)
+model_results <- data.frame(GLM = min(model_list$glmStepAIC$results$RMSE),
+                            SVM = min(model_list$svmRadial$results$RMSE),
+                            RF = min(model_list$rf$results$RMSE),
+                            XGBT = min(model_list$xgbTree$results$RMSE),
+                            XGBL = min(model_list$xgbLinear$results$RMSE),
+                            BAYES = min(model_list$bayesglm$results$RMSE),
+                            RPART = min(model_list$rpart1SE$results$RMSE))
+print(model_results)
+```
+
+In terms of RMSE, the extreme gradient boosting tree offers the best result, with 1.08 (remember the mean group is 1.56)
+
+caretEnsemble offers a functionality to resample this model list and plot the performance:
+
+```{r}
+resamples <- resamples(model_list)
+dotplot(resamples, metric = "RMSE")
+```
+
+The rpart1SE, svmRadial and rf are presenting a smaller variance compared to the other models.
+
+Final attempt is to create a new model by ensembling model_list, in order to find the best possible model, hopefully a model that combines the best properties of the 5 we have trained and boosts performance.
+
+Ideally, ensembling would be applied to models with low correlation between them. 
+
+```{r}
+modelCor(resamples)
+```
+
+Firstly, we train an ensemble of our models using caretEnsemble(), which will perform a linear combination of all the models in our model list.
+
+```{r}
+set.seed(222)
+ensemble_1 <- caretEnsemble(model_list, metric = "RMSE", trControl = my_control)
+summary(ensemble_1)
+ensemble_1pick <- caretEnsemble(model_list[c(2,3,4,7)],metric = "RMSE", trControl = my_control)
+summary(ensemble_1pick)
+```
+
+RMSE is slightly increased for the training set to 1.5196 as opposed to xbgTree RMSE 1.088, but the model gained in extra information to use towards prediction.
+
+Here's a plot of the 2 ensemble models
+
+```{r}
+plot(ensemble_1)
+plot(ensemble_1pick)
+```
+
+The red dashed line is the ensemble's RMSE performance
+
+Next, we can be more specific and try to do an ensemble using other algorithms. I tried some but wasn't able to improve performance. We will leave both regardless, to check which does best with unseen data.
+
+```{r}
+set.seed(222)
+ensemble_2 <- caretStack(model_list, method = "glmnet", metric = "RMSE", trControl = my_control)
+print(ensemble_2)
+```
+Finally, it's time to evaluate the performance of our models over unseen data, which is in our test set.
+
+We first predict the test set with each model and then compute RMSE:
+
+```{r}
+pred_glm <- predict.train(model_list$glm, newdata = X_test)
+pred_svm <- predict.train(model_list$svmRadial, newdata = X_test)
+pred_rf <- predict.train(model_list$rf, newdata = X_test)
+pred_xgbT <- predict.train(model_list$xgbTree, newdata = X_test)
+pred_xgbL <- predict.train(model_list$xgbLinear, newdata = X_test)
+pred_bayes <- predict.train(model_list$bayesglm, newdata = X_test)
+pred_rpart <- predict.train(model_list$rpart1SE, newdata = X_test)
+predict_ens1 <- predict(ensemble_1, newdata = X_test)
+predict_ens1p <- predict(ensemble_1pick, newdata = X_test)
+predict_ens2 <- predict(ensemble_2, newdata = X_test)
+pred_RMSE <- data.frame(ensemble_1 = RMSE(predict_ens1, y_test),
+                        ensemble_1p = RMSE(predict_ens1p, y_test),
+                        ensemble_2  = RMSE(predict_ens2, y_test),
+                        GLM = RMSE(pred_glm, y_test),
+                        SVM = RMSE(pred_svm, y_test),
+                        RF = RMSE(pred_rf, y_test),
+                        XGBT = RMSE(pred_xgbT, y_test),
+                        XGBL = RMSE(pred_xgbL, y_test),
+                        BAYES = RMSE(pred_bayes, y_test),
+                        RPART = RMSE(pred_rpart, y_test))
+print(pred_RMSE)
+```
+
+The extreme gradient boosting linear model out performs every other model on the test set, including our ensemble_2, which is the 3rd best, after random forest.
+
+Lastly, variable importance! 
+In order to do this, I will calculate our "xgbLinear" model separately, indicating I want to retain the variable importance and then plot it:
+
+```{r}
+set.seed(123)
+xgbTree_model <- train(X_train,
+                       y_train,
+                       trControl = my_control,
+                       method = "xgbLinear",
+                       metric = "RMSE",
+                       preProcess  = c("center","scale"),
+                       importance = TRUE)
+plot(varImp(xgbTree_model))
+```
+
+Here we can see the high importance of variables "Fe2O3" and "Length_A" to the prediction of MWCNT_group. This was to be expected since we had already observed a high correlation between them in our correlation plot.
+
+Validating issues: 1. are log-scaled descriptors in the important variables and if not try repeating the analisis with normal scaling. whether analysis. 2. repaet the analysis without those variables appearing in th eend of the list
+
+### 6) Conclusion
+
+
+We deployed a workflow which utilizes caret and caretEnsemble in terms of doing multiple modelling all at once, and perform models performance comparisons. 
+
+
+
+Compute correlations for different models:
+
+```{r}
+pred_cor <- data.frame(ensemble_1 = cor(predict_ens1, y_test),
+                       ensemble_1p = cor(predict_ens1p, y_test),
+                       ensemble_2 = cor(predict_ens2, y_test),
+                       GLM = cor(pred_glm, y_test),
+                       SVM = cor(pred_svm, y_test),
+                       RF = cor(pred_rf, y_test),
+                       XGBT = cor(pred_xgbT, y_test),
+                       XGBL = cor(pred_xgbL, y_test),
+                       BAYES = cor(pred_bayes, y_test),
+                       RPART = cor(pred_rpart, y_test))
+print(pred_cor)
+```
+
+Next steps: more advanced algorithms will be added as well as fine hyperparameter tuning. 
+
